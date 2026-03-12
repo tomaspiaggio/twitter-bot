@@ -11,109 +11,91 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 // --- Config ---
 
 const SLACK_CHANNEL = process.env.SLACK_CHANNEL_ID!;
-const SEARCH_POLL_MS = 10 * 60 * 1000; // 10 minutes between search cycles
+const SEARCH_POLL_MS = 5 * 60 * 1000; // 5 minutes between search cycles — early replies get seen
 const DELAY_BETWEEN_REQUESTS_MS = 10_000; // 10s between bird API calls to avoid rate limits
 const SEEN_FILE = "seen_tweets.json";
 const WINNERS_FILE = "winners.json";
-const SEARCH_MAX_AGE_MS = 60 * 60 * 1000; // 60 min for discovery
+const SEARCH_MAX_AGE_MS = 30 * 60 * 1000; // 30 min — early replies win
 const RELEVANCE_THRESHOLD = 5; // PASS handles quality, loosen intake
-const SEARCH_QUERIES_PER_CYCLE = 3; // queries per search cycle
+const SEARCH_QUERIES_PER_CYCLE = 5; // queries per search cycle — cheap now with min_faves pre-filter
 
 // Search queries — NO min_faves, we filter by recency + account size instead
 // lang:en OR lang:es appended at search time
+// All queries use min_faves to pre-filter — low thresholds to catch tweets early
 const SEARCH_QUERIES = [
   // --- Core dev tooling / AI coding ---
-  "vibe coding",
-  "cursor ai",
-  "claude code",
-  "ai agents",
-  "ai testing",
-  "e2e tests",
-  "dev tooling",
-  "AI coding",
-  "agentic coding",
-  "LLM agents",
-  "code review AI",
-  "test automation",
+  "vibe coding min_faves:5",
+  "cursor ai min_faves:5",
+  "claude code min_faves:5",
+  "ai agents min_faves:5",
+  "ai coding min_faves:5",
+  "agentic coding min_faves:3",
+  "LLM agents min_faves:5",
+  "dev tooling min_faves:5",
 
   // --- Frameworks & ecosystem (dax territory) ---
-  "react server components",
-  "nextjs",
-  "next.js",
-  "vercel",
-  "remix",
-  "astro",
-  "svelte",
-  "typescript",
-  "tailwind",
-  "turborepo",
-  "monorepo",
-  "bun",
-  "deno",
+  "react server components min_faves:5",
+  "nextjs min_faves:10",
+  "next.js min_faves:10",
+  "vercel min_faves:10",
+  "typescript min_faves:10",
+  "tailwind min_faves:10",
+  "svelte min_faves:5",
+  "remix min_faves:5",
+  "bun min_faves:5",
 
   // --- Hot-take magnets ---
-  "frontend is dead",
-  "backend is dead",
-  "junior devs",
-  "senior engineers",
-  "10x developer",
-  "overengineered",
-  "technical debt",
-  "broken production",
-  "shipping fast",
-  "move fast and break things",
-  "startup engineering",
-  "solo founder",
-  "indie hacker",
+  "frontend is dead min_faves:5",
+  "backend is dead min_faves:5",
+  "junior devs min_faves:5",
+  "senior engineers min_faves:5",
+  "10x developer min_faves:5",
+  "overengineered min_faves:5",
+  "technical debt min_faves:5",
+  "shipping fast min_faves:5",
+  "solo founder min_faves:5",
+  "indie hacker min_faves:5",
 
   // --- AI replacing devs discourse ---
-  "ai replacing developers",
-  "ai generated code",
-  "copilot",
-  "github copilot",
-  "devin ai",
-  "codegen",
-  "prompt engineering",
-  "ai pair programming",
-  "cursor tab",
-  "windsurf",
-  "ai code review",
+  "ai replacing developers min_faves:5",
+  "ai generated code min_faves:5",
+  "github copilot min_faves:5",
+  "devin ai min_faves:5",
+  "cursor tab min_faves:5",
+  "windsurf min_faves:5",
+  "ai pair programming min_faves:5",
 
   // --- Testing & QA (home turf) ---
-  "e2e testing",
-  "playwright",
-  "cypress",
-  "manual QA",
-  "CI CD pipeline",
-  "flaky tests",
-  "test coverage",
-  "integration tests",
-  "regression testing",
+  "e2e testing min_faves:3",
+  "playwright min_faves:5",
+  "cypress min_faves:5",
+  "flaky tests min_faves:3",
+  "test automation min_faves:5",
+  "CI CD pipeline min_faves:5",
 
   // --- Founder / shipping culture ---
-  "shipped it",
-  "launched today",
-  "building in public",
-  "developer experience",
-  "DX",
-  "open source",
-  "self hosted",
-  "side project",
+  "building in public min_faves:5",
+  "developer experience min_faves:5",
+  "open source min_faves:10",
+  "launched today min_faves:5",
+  "side project min_faves:5",
 
-  // --- Targeted high-signal queries ---
-  '"vibe coding" min_faves:20',
-  '"cursor broken" OR "cursor slow"',
-  '"ai generated code" quality',
-  '"replaced engineers" OR "replacing developers"',
-  '"shipping without tests"',
-  '"e2e testing" sucks',
-  '"claude code" OR "codex" min_faves:10',
-  '"react is dead" OR "react is fine"',
-  '"nextjs is" OR "next.js is"',
-  '"typescript is"',
-  '"worst codebase"',
-  '"deployed to production"',
-  '"just mass-fired" OR "just mass fired"',
+  // --- Exact-phrase high-signal ---
+  '"vibe coding" min_faves:5',
+  '"cursor broken" OR "cursor slow" min_faves:3',
+  '"replaced engineers" OR "replacing developers" min_faves:5',
+  '"shipping without tests" min_faves:3',
+  '"e2e testing" sucks min_faves:3',
+  '"claude code" OR "codex" min_faves:5',
+  '"react is dead" OR "react is fine" min_faves:5',
+  '"worst codebase" min_faves:5',
+  '"deployed to production" min_faves:5',
+  '"ai bubble" min_faves:5',
+  '"software engineers" min_faves:10',
+  '"coding agents" min_faves:5',
+  '"overhyped" AI min_faves:5',
+  '"test in production" min_faves:3',
+  '"broke prod" OR "broke production" min_faves:3',
 ];
 let searchQueryIndex = 0;
 
