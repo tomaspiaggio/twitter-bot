@@ -11,19 +11,18 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 // --- Config ---
 
 const SLACK_CHANNEL = process.env.SLACK_CHANNEL_ID!;
-const TARGET_POLL_MS = 5 * 60 * 1000; // 5 minutes for target accounts
-const SEARCH_POLL_MS = 15 * 60 * 1000; // 15 minutes for viral search
-const DELAY_BETWEEN_REQUESTS_MS = 3_000; // 3s between bird API calls to avoid rate limits
+const SEARCH_POLL_MS = 10 * 60 * 1000; // 10 minutes between search cycles
+const DELAY_BETWEEN_REQUESTS_MS = 10_000; // 10s between bird API calls to avoid rate limits
 const SEEN_FILE = "seen_tweets.json";
 const WINNERS_FILE = "winners.json";
-const TARGET_MAX_AGE_MS = 45 * 60 * 1000; // 45 min — be early or don't bother
-const SEARCH_MAX_AGE_MS = 30 * 60 * 1000; // 30 min for viral discovery
-const TARGET_MIN_LIKES = 3; // low bar — these are curated accounts
-const RELEVANCE_THRESHOLD = 6; // 1-10, skip below this
+const SEARCH_MAX_AGE_MS = 60 * 60 * 1000; // 60 min for discovery
+const RELEVANCE_THRESHOLD = 5; // PASS handles quality, loosen intake
+const SEARCH_QUERIES_PER_CYCLE = 3; // queries per search cycle
 
 // Search queries — NO min_faves, we filter by recency + account size instead
 // lang:en OR lang:es appended at search time
 const SEARCH_QUERIES = [
+  // --- Core dev tooling / AI coding ---
   "vibe coding",
   "cursor ai",
   "claude code",
@@ -31,21 +30,95 @@ const SEARCH_QUERIES = [
   "ai testing",
   "e2e tests",
   "dev tooling",
-  "manual QA",
   "AI coding",
-  "technical debt",
-  "CI CD pipeline",
-  "playwright",
   "agentic coding",
   "LLM agents",
-  "broken production",
-  "shipping fast",
   "code review AI",
   "test automation",
+
+  // --- Frameworks & ecosystem (dax territory) ---
+  "react server components",
+  "nextjs",
+  "next.js",
+  "vercel",
+  "remix",
+  "astro",
+  "svelte",
+  "typescript",
+  "tailwind",
+  "turborepo",
+  "monorepo",
+  "bun",
+  "deno",
+
+  // --- Hot-take magnets ---
+  "frontend is dead",
+  "backend is dead",
+  "junior devs",
+  "senior engineers",
+  "10x developer",
+  "overengineered",
+  "technical debt",
+  "broken production",
+  "shipping fast",
+  "move fast and break things",
+  "startup engineering",
+  "solo founder",
+  "indie hacker",
+
+  // --- AI replacing devs discourse ---
+  "ai replacing developers",
+  "ai generated code",
+  "copilot",
+  "github copilot",
+  "devin ai",
+  "codegen",
+  "prompt engineering",
+  "ai pair programming",
+  "cursor tab",
+  "windsurf",
+  "ai code review",
+
+  // --- Testing & QA (home turf) ---
+  "e2e testing",
+  "playwright",
+  "cypress",
+  "manual QA",
+  "CI CD pipeline",
+  "flaky tests",
+  "test coverage",
+  "integration tests",
+  "regression testing",
+
+  // --- Founder / shipping culture ---
+  "shipped it",
+  "launched today",
+  "building in public",
+  "developer experience",
+  "DX",
+  "open source",
+  "self hosted",
+  "side project",
+
+  // --- Targeted high-signal queries ---
+  '"vibe coding" min_faves:20',
+  '"cursor broken" OR "cursor slow"',
+  '"ai generated code" quality',
+  '"replaced engineers" OR "replacing developers"',
+  '"shipping without tests"',
+  '"e2e testing" sucks',
+  '"claude code" OR "codex" min_faves:10',
+  '"react is dead" OR "react is fine"',
+  '"nextjs is" OR "next.js is"',
+  '"typescript is"',
+  '"worst codebase"',
+  '"deployed to production"',
+  '"just mass-fired" OR "just mass fired"',
 ];
 let searchQueryIndex = 0;
 
-const TARGET_ACCOUNTS = [
+// Trusted accounts — skip engagement/follower checks when found in search results
+const TRUSTED_ACCOUNTS = new Set([
   "t3dotgg",
   "rauchg",
   "mattpocockuk",
@@ -57,7 +130,30 @@ const TARGET_ACCOUNTS = [
   "mckaywrigley",
   "cursor_ai",
   "thdxr",
-];
+  "levelsio",
+  "garrytan",
+  "leeerob",
+  "jaredpalmer",
+  "cramforce",
+  "dan_abramov",
+  "sarah_edo",
+  "shanselman",
+  "sama",
+  "simonw",
+  "skirano",
+  "alexalbert__",
+  "karpathy",
+  "dhh",
+]);
+
+const BLOCKED_ACCOUNTS = new Set([
+  "Dexerto",
+  "BowTiedMara",
+  "0xCygaar",
+  "DoWCTO",
+  "ReclaimTheNetHQ",
+  "CryptoWizardd",
+]);
 
 const SYSTEM_PROMPT = `you are ghostwriting twitter replies for tom. he's the technical founder/cto of autonoma (ai-powered e2e testing). you need to sound exactly like him — not like an AI pretending to be him.
 
@@ -81,21 +177,36 @@ RULES:
 - replies should feel like they come from someone who ships product every day and has opinions from doing, not reading
 - jab jab jab right hook style — add value, share a take, be interesting. don't sell, don't try hard.
 - avoid anything that sounds like it was written by chatgpt. no "the irony is", no "this is the way", no corporate speak, no inspirational tone.
+- keep it under 100 chars when possible. the winners were all short.
+- never write more than 2 sentences.
+- if replying to a viral doomer thread, find the ONE weak claim and attack it specifically.
+- matching shitpost energy > adding value on shitposts.
+- don't reply to off-topic accounts even if the tweet mentions AI.
 - under 200 chars when possible. if it needs more, go up to 280 max.
 
-Output format: Return ONLY a JSON array of exactly 3 reply strings. No explanation, no markdown, no code fences. Example:
-["reply one", "reply two", "reply three"]`;
+WHEN TO PASS (this is critical):
+- if the tweet is a simple question with no hot-take angle (e.g. "who is the best PM you know?") → PASS
+- if the tweet is a vague 1-3 word thought-leader post with nothing to push back on (e.g. "Anti-fragile Infrastructure") → PASS
+- if you'd have to manufacture contrarianism or cleverness that doesn't flow naturally → PASS
+- if none of your 3 options would genuinely get likes from dev twitter → PASS
+- if you're writing generic truisms that any AI could produce ("most people are still struggling with X") → PASS
+- ONLY generate replies when there's a genuine angle: a weak claim to attack, a shared experience to riff on, a joke that writes itself, or a real opinion tom would actually have.
+- it's better to pass on 70% of tweets than to post mid replies that get 0 likes.
 
-const RELEVANCE_PROMPT = `you are filtering tweets for tom, a technical founder/cto building an ai-powered e2e testing platform.
+Output format: Return ONLY a JSON array. If you have good replies, return exactly 3: ["reply one", "reply two", "reply three"]. If the tweet has no good angle, return: ["PASS"]. No explanation, no markdown, no code fences.`;
+
+const RELEVANCE_PROMPT = `you are filtering tweets for tom, a technical founder/cto building an ai-powered e2e testing platform. his audience is dev tooling founders, AI/LLM builders, and engineers who ship.
 
 score this tweet 1-10 for how relevant and valuable it would be for tom to reply to. consider:
 - is it about tech, dev tooling, AI, testing, shipping software, or the developer ecosystem?
 - is there a natural opening for a sharp, opinionated reply?
 - would replying help tom build visibility in the dev community?
+- does the account's audience overlap with dev tooling / AI builders?
 
-score LOW (1-3): personal stuff, anime, food, politics, crypto shilling, generic motivational content
-score MEDIUM (4-6): tangentially tech but no natural reply angle, or too niche
-score HIGH (7-10): dev tooling hot takes, AI/coding discourse, testing debates, shipping culture, vibe coding discourse
+score 1-2 (NEVER ENGAGE): crypto/web3 accounts (even if the tweet mentions AI), gaming/entertainment news, political/military accounts, generic news aggregators, meme accounts with no dev audience
+score 3-4 (SKIP): personal stuff, anime, food, generic motivational content, accounts with zero dev audience overlap
+score 5-6: tangentially tech but no natural reply angle, or too niche
+score 7-10: dev tooling hot takes, AI/coding discourse, testing debates, shipping culture, vibe coding discourse, founder takes on building
 
 return ONLY a single number 1-10. nothing else.`;
 
@@ -211,13 +322,13 @@ function isWorthReplying(tweet: Tweet, followers: number): { pass: boolean; reas
   const ageMinutes = Math.max(age / 60000, 1);
 
   // Hard minimums — skip tiny accounts entirely
-  if (followers < 1000) {
+  if (followers < 500) {
     return { pass: false, reason: `too few followers (${followers})` };
   }
 
   // For accounts with real reach (10k+), be more lenient on engagement
-  // For smaller accounts (1k-10k), require stronger engagement signal
-  const likesNeeded = followers >= 10_000 ? 5 : 15;
+  // For smaller accounts (500-10k), require stronger engagement signal
+  const likesNeeded = followers >= 10_000 ? 3 : 10;
   if (tweet.likeCount < likesNeeded) {
     return { pass: false, reason: `not enough likes (${tweet.likeCount}/${likesNeeded} needed for ${followers} followers)` };
   }
@@ -228,16 +339,16 @@ function isWorthReplying(tweet: Tweet, followers: number): { pass: boolean; reas
   const velocity = tweet.likeCount / ageMinutes;
 
   // Must meet at least one of these signals:
-  // 1. High velocity (>2 likes/min) — blowing up right now
-  // 2. Good engagement rate (>0.05%) — resonating with audience
-  // 3. Absolute likes (50+) with decent account — already trending
-  if (velocity >= 2) {
+  // 1. High velocity (>1 like/min) — blowing up right now
+  // 2. Good engagement rate (>0.03%) — resonating with audience
+  // 3. Absolute likes (20+) with decent account — already has traction
+  if (velocity >= 1) {
     return { pass: true, reason: `high velocity (${velocity.toFixed(1)} likes/min)` };
   }
-  if (engagementRate >= 0.0005) {
+  if (engagementRate >= 0.0003) {
     return { pass: true, reason: `good engagement rate (${(engagementRate * 100).toFixed(2)}%)` };
   }
-  if (tweet.likeCount >= 50 && followers >= 5000) {
+  if (tweet.likeCount >= 20 && followers >= 2000) {
     return { pass: true, reason: `strong absolute engagement (${tweet.likeCount} likes, ${followers} followers)` };
   }
 
@@ -269,7 +380,12 @@ function isEnglishOrSpanish(text: string): boolean {
 // Track rate limit state globally — when we hit 429, back off everything
 let rateLimitBackoffUntil = 0;
 
-async function bird(args: string[], maxRetries = 3): Promise<string> {
+// Add jitter to avoid thundering herd after backoff clears
+function jitter(baseMs: number): number {
+  return baseMs + Math.random() * baseMs * 0.3; // +0-30% jitter
+}
+
+async function bird(args: string[], maxRetries = 5): Promise<string> {
   // If we're in a global backoff, wait it out
   const now = Date.now();
   if (rateLimitBackoffUntil > now) {
@@ -287,7 +403,8 @@ async function bird(args: string[], maxRetries = 3): Promise<string> {
 
       // Check stderr for rate limit (bird reports errors there)
       if (stderr && /429|rate limit/i.test(stderr)) {
-        const backoff = Math.pow(2, attempt) * 30_000; // 30s, 60s, 120s
+        // 60s, 120s, 240s, 480s, 960s (1m → 16m)
+        const backoff = jitter(Math.pow(2, attempt) * 60_000);
         console.warn(`[bird] 429 rate limit (attempt ${attempt + 1}/${maxRetries}), backing off ${Math.round(backoff / 1000)}s`);
         rateLimitBackoffUntil = Date.now() + backoff;
         await sleep(backoff);
@@ -303,7 +420,8 @@ async function bird(args: string[], maxRetries = 3): Promise<string> {
       const errMsg = e.stderr || e.message || "";
 
       if (/429|rate limit/i.test(errMsg)) {
-        const backoff = Math.pow(2, attempt) * 30_000; // 30s, 60s, 120s
+        // 60s, 120s, 240s, 480s, 960s (1m → 16m)
+        const backoff = jitter(Math.pow(2, attempt) * 60_000);
         console.warn(`[bird] 429 rate limit (attempt ${attempt + 1}/${maxRetries}), backing off ${Math.round(backoff / 1000)}s`);
         rateLimitBackoffUntil = Date.now() + backoff;
 
@@ -316,12 +434,8 @@ async function bird(args: string[], maxRetries = 3): Promise<string> {
       console.error(`[bird] Error running: bird ${args.join(" ")} (attempt ${attempt + 1}/${maxRetries})`);
       console.error(errMsg);
 
-      if (attempt === maxRetries - 1) {
-        return `[ERROR] ${errMsg}`;
-      }
-
-      // Non-429 errors: short backoff before retry
-      await sleep(5_000 * (attempt + 1));
+      // Non-429 errors: don't retry, fail immediately (e.g. "tweet not found", "unauthorized")
+      return `[ERROR] ${errMsg}`;
     }
   }
   return "[ERROR] max retries exceeded";
@@ -386,6 +500,8 @@ async function generateReplies(
       .replace(/```/g, "")
       .trim();
     const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed) && parsed.length === 1 && parsed[0] === "PASS")
+      return { options: ["PASS"], history: newHistory };
     if (Array.isArray(parsed) && parsed.length === 3)
       return { options: parsed, history: newHistory };
   } catch {
@@ -680,80 +796,26 @@ app.message(async ({ message, say }) => {
 
 // --- Polling ---
 
-async function pollTargetAccounts() {
-  console.log(`[poll] Checking ${TARGET_ACCOUNTS.length} target accounts...`);
-  const seen = loadSeen();
-  let found = 0;
-
-  for (const handle of TARGET_ACCOUNTS) {
-    // If we're deep in rate limit backoff, skip remaining accounts this cycle
-    if (rateLimitBackoffUntil > Date.now() + 60_000) {
-      console.log(`[poll] Rate limited — skipping remaining accounts this cycle`);
-      break;
-    }
-    await sleep(DELAY_BETWEEN_REQUESTS_MS);
-    try {
-      const raw = await bird(["user-tweets", handle, "-n", "5", "--json", "--plain"]);
-      if (!raw || raw.startsWith("[ERROR]")) continue;
-
-      const jsonStart = raw.indexOf("[");
-      if (jsonStart === -1) continue;
-      const tweets: Tweet[] = JSON.parse(raw.slice(jsonStart));
-
-      for (const tweet of tweets) {
-        if (seen[tweet.id]) continue;
-        if (tweet.text.startsWith("RT @")) continue;
-        if (!isEnglishOrSpanish(tweet.text)) continue;
-        if (isCryptoSpam(tweet.text)) continue;
-
-        const age = parseTweetAge(tweet.createdAt);
-        if (age > TARGET_MAX_AGE_MS) continue;
-        if (tweet.likeCount < TARGET_MIN_LIKES) continue;
-
-        // Relevance check — skip off-topic tweets
-        const score = await scoreRelevance(tweet);
-        if (score < RELEVANCE_THRESHOLD) {
-          console.log(
-            `[poll] Skipping @${handle} tweet (relevance ${score}/10): "${tweet.text.slice(0, 50)}..."`
-          );
-          seen[tweet.id] = { skippedAt: new Date().toISOString() };
-          saveSeen(seen);
-          continue;
-        }
-
-        seen[tweet.id] = {};
-        saveSeen(seen);
-
-        console.log(
-          `[poll] Found tweet from @${handle} (relevance ${score}/10): "${tweet.text.slice(0, 60)}..." (${tweet.likeCount} likes, ${formatAge(age)})`
-        );
-
-        const { options, history } = await generateReplies(tweet, []);
-        await postTweetToSlack(tweet, options, history);
-        found++;
-      }
-    } catch (err) {
-      console.error(`[poll] Error fetching @${handle}:`, err);
-    }
-  }
-
-  console.log(`[poll:targets] Done. Found ${found} new tweets.`);
-}
-
-async function pollViralSearch() {
+async function pollSearch() {
   console.log(`[poll] Running viral search...`);
   const seen = loadSeen();
   let found = 0;
 
-  // Run 3 queries per cycle, rotating through the list
-  for (let i = 0; i < 3; i++) {
+  // Run multiple queries per cycle, rotating through the list
+  for (let i = 0; i < SEARCH_QUERIES_PER_CYCLE; i++) {
+    // Bail if rate limited
+    if (rateLimitBackoffUntil > Date.now()) {
+      console.log(`[poll:viral] Rate limited — skipping remaining queries this cycle (${Math.round((rateLimitBackoffUntil - Date.now()) / 1000)}s left)`);
+      break;
+    }
+
     const baseQuery = SEARCH_QUERIES[searchQueryIndex % SEARCH_QUERIES.length];
     const query = `${baseQuery} (lang:en OR lang:es)`;
     searchQueryIndex++;
 
     await sleep(DELAY_BETWEEN_REQUESTS_MS);
     try {
-      const raw = await bird(["search", query, "-n", "10", "--json", "--plain"]);
+      const raw = await bird(["search", query, "-n", "15", "--json", "--plain"]);
       if (!raw || raw.startsWith("[ERROR]")) continue;
 
       const jsonStart = raw.indexOf("[");
@@ -762,7 +824,9 @@ async function pollViralSearch() {
 
       for (const tweet of tweets) {
         if (seen[tweet.id]) continue;
+        if (BLOCKED_ACCOUNTS.has(tweet.author.username)) continue;
         if (tweet.text.startsWith("RT @")) continue;
+        if (!isEnglishOrSpanish(tweet.text)) continue;
         if (isCryptoSpam(tweet.text)) continue;
 
         // Skip replies — we want original tweets
@@ -771,24 +835,33 @@ async function pollViralSearch() {
         const age = parseTweetAge(tweet.createdAt);
         if (age > SEARCH_MAX_AGE_MS) continue;
 
-        // Fetch follower count for this tweet's author (individual read, not bulk)
-        await sleep(DELAY_BETWEEN_REQUESTS_MS);
-        const followers = await fetchFollowers(tweet.id);
+        const isTrusted = TRUSTED_ACCOUNTS.has(tweet.author.username);
 
-        // Quality gate: check account size + engagement signal
-        const { pass, reason } = isWorthReplying(tweet, followers);
-        if (!pass) {
-          console.log(
-            `[poll] Skipping @${tweet.author.username}: ${reason}`
-          );
-          seen[tweet.id] = { skippedAt: new Date().toISOString() };
-          saveSeen(seen);
-          continue;
+        // Trusted accounts: skip the expensive follower lookup + engagement gate
+        if (!isTrusted) {
+          // Bail if rate limited before making another bird call
+          if (rateLimitBackoffUntil > Date.now()) break;
+
+          // Fetch follower count for this tweet's author (individual read, not bulk)
+          await sleep(DELAY_BETWEEN_REQUESTS_MS);
+          const followers = await fetchFollowers(tweet.id);
+
+          // Quality gate: check account size + engagement signal
+          const { pass, reason } = isWorthReplying(tweet, followers);
+          if (!pass) {
+            console.log(
+              `[poll] Skipping @${tweet.author.username}: ${reason}`
+            );
+            seen[tweet.id] = { skippedAt: new Date().toISOString() };
+            saveSeen(seen);
+            continue;
+          }
         }
 
-        // Relevance check
+        // Relevance check (even trusted accounts — they tweet off-topic sometimes)
         const score = await scoreRelevance(tweet);
         if (score < RELEVANCE_THRESHOLD) {
+          console.log(`[poll] Skipping @${tweet.author.username} (relevance ${score}/10): "${tweet.text.slice(0, 50)}..."`);
           seen[tweet.id] = { skippedAt: new Date().toISOString() };
           saveSeen(seen);
           continue;
@@ -798,10 +871,16 @@ async function pollViralSearch() {
         saveSeen(seen);
 
         console.log(
-          `[poll] Viral tweet from @${tweet.author.username} (${followers} followers, relevance ${score}/10, ${reason}): "${tweet.text.slice(0, 60)}..." (${tweet.likeCount} likes, ${formatAge(age)}) [query: ${baseQuery}]`
+          `[poll] ${isTrusted ? "Trusted" : "Viral"} tweet from @${tweet.author.username} (relevance ${score}/10): "${tweet.text.slice(0, 60)}..." (${tweet.likeCount} likes, ${formatAge(age)}) [query: ${baseQuery}]`
         );
 
         const { options, history } = await generateReplies(tweet, []);
+        if (options.length === 1 && options[0] === "PASS") {
+          console.log(`[poll] AI passed on @${tweet.author.username} tweet — no good angle: "${tweet.text.slice(0, 50)}..."`);
+          seen[tweet.id] = { skippedAt: new Date().toISOString() };
+          saveSeen(seen);
+          continue;
+        }
         await postTweetToSlack(tweet, options, history);
         found++;
       }
@@ -824,17 +903,14 @@ async function main() {
   await app.start();
   console.log("[slack] Connected via Socket Mode");
 
-  // Initial polls
-  await pollTargetAccounts();
-  await pollViralSearch();
+  // Initial poll
+  await pollSearch();
 
-  // Target accounts: every 3 minutes (be early)
-  setInterval(pollTargetAccounts, TARGET_POLL_MS);
-  // Viral search: every 10 minutes
-  setInterval(pollViralSearch, SEARCH_POLL_MS);
+  // Search every cycle
+  setInterval(pollSearch, SEARCH_POLL_MS);
 
   console.log(
-    `[bot] Target accounts every ${TARGET_POLL_MS / 60000}min, viral search every ${SEARCH_POLL_MS / 60000}min. Waiting for interactions...`
+    `[bot] Search every ${SEARCH_POLL_MS / 60000}min (${SEARCH_QUERIES.length} queries, ${SEARCH_QUERIES_PER_CYCLE}/cycle). Trusted accounts: ${TRUSTED_ACCOUNTS.size}. Waiting for interactions...`
   );
 }
 
