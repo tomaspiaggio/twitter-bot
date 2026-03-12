@@ -11,13 +11,13 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 // --- Config ---
 
 const SLACK_CHANNEL = process.env.SLACK_CHANNEL_ID!;
-const SEARCH_POLL_MS = 5 * 60 * 1000; // 5 minutes between search cycles — early replies get seen
-const DELAY_BETWEEN_REQUESTS_MS = 10_000; // 10s between bird API calls to avoid rate limits
+const SEARCH_POLL_MS = 2 * 60 * 1000; // 2 minutes between search cycles
+const DELAY_BETWEEN_REQUESTS_MS = 5_000; // 5s between bird API calls
 const SEEN_FILE = "seen_tweets.json";
 const WINNERS_FILE = "winners.json";
 const SEARCH_MAX_AGE_MS = 30 * 60 * 1000; // 30 min — early replies win
 const RELEVANCE_THRESHOLD = 5; // PASS handles quality, loosen intake
-const SEARCH_QUERIES_PER_CYCLE = 5; // queries per search cycle — cheap now with min_faves pre-filter
+const SEARCH_QUERIES_PER_CYCLE = 25; // queries per search cycle
 
 // Search queries — NO min_faves, we filter by recency + account size instead
 // lang:en OR lang:es appended at search time
