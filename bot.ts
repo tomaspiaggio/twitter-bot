@@ -588,6 +588,13 @@ const app = new App({
   socketMode: true,
 });
 
+// Increase ping/pong timeouts to avoid false disconnects during heavy processing
+const smReceiver = (app as any).receiver;
+if (smReceiver?.client) {
+  smReceiver.client.clientPingTimeoutMS = 30_000;
+  smReceiver.client.serverPingTimeoutMS = 30_000;
+}
+
 async function postTweetToSlack(
   tweet: Tweet,
   options: string[],
