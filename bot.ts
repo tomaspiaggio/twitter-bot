@@ -192,9 +192,10 @@ score this tweet 1-10 for how relevant and valuable it would be for tom to reply
 - is there a natural opening for a sharp, opinionated reply?
 - would replying help tom build visibility in the dev community?
 - does the account's audience overlap with dev tooling / AI builders?
+- is it a product announcement or launch? if so, score LOW — there's rarely a good reply angle for "we just shipped X"
 
 score 1-2 (NEVER ENGAGE): crypto/web3 accounts (even if the tweet mentions AI), gaming/entertainment news, political/military accounts, generic news aggregators, meme accounts with no dev audience
-score 3-4 (SKIP): personal stuff, anime, food, generic motivational content, accounts with zero dev audience overlap
+score 3-4 (SKIP): personal stuff, anime, food, generic motivational content, accounts with zero dev audience overlap, product announcements/launches ("we just launched", "introducing", "now available", "check out our new", release notes, changelog dumps) — these have no natural reply angle
 score 5-6: tangentially tech but no natural reply angle, or too niche
 score 7-10: dev tooling hot takes, AI/coding discourse, testing debates, shipping culture, vibe coding discourse, founder takes on building
 
