@@ -530,7 +530,7 @@ function buildOptionBlocks(tweet: Tweet, options: string[]) {
       elements: [
         {
           type: "mrkdwn",
-          text: `:heart: ${tweet.likeCount}  :recycle: ${tweet.retweetCount}  :speech_balloon: ${tweet.replyCount}  |  ${formatAge(age)}\n${url}`,
+          text: `:heart: ${tweet.likeCount}  :recycle: ${tweet.retweetCount}  :speech_balloon: ${tweet.replyCount}${tweet.followersCount ? `  :busts_in_silhouette: ${tweet.followersCount.toLocaleString()}` : ""}  |  ${formatAge(age)}\n${url}`,
         },
       ],
     },
@@ -850,6 +850,7 @@ async function pollSearch() {
           // Fetch follower count for this tweet's author (individual read, not bulk)
           await sleep(DELAY_BETWEEN_REQUESTS_MS);
           const followers = await fetchFollowers(tweet.id);
+          tweet.followersCount = followers;
 
           // Quality gate: check account size + engagement signal
           const { pass, reason } = isWorthReplying(tweet, followers);
